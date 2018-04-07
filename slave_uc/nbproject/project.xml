@@ -6,7 +6,7 @@
             <name>slave_uc</name>
             <creation-uuid>09390493-9a52-4478-b252-3acc3fd25c05</creation-uuid>
             <make-project-type>0</make-project-type>
-            <c-extensions/>
+            <c-extensions>c</c-extensions>
             <cpp-extensions/>
             <header-extensions/>
             <asminc-extensions/>

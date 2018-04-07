@@ -6,7 +6,7 @@
             <name>main_uc</name>
             <creation-uuid>79ade54f-783b-46c7-8fa2-792c911d7ad8</creation-uuid>
             <make-project-type>0</make-project-type>
-            <c-extensions/>
+            <c-extensions>c</c-extensions>
             <cpp-extensions/>
             <header-extensions/>
             <asminc-extensions/>

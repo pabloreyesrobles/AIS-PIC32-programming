@@ -1,0 +1,11 @@
+07/04/2018
+
+-Tiempo de operación con strtol() para las 3 ruedas una vez los datos han llegado el pic con reloj del sistema: 16.29[us]
+-Tiempo de operación de cálculo de velocidades para cada rueda a través del modelo cinemático con reloj del sistema: 36.4[us]
+-Tiempo total de cálculo de velocidad por rueda con reloj del sistema: 52,69[us]
+-Estimado con un reloj 4 veces más lento (peripheral clock): 210,76[us] = 0,211[ms]
+
+-Recepción de 12 bytes a través de la UART a 19200 baud rate: 5,4[ms]
+-Tiempo de operación con strtol() para las 3 ruedas una vez los datos han llegado el pic con reloj del sistema en la rutina de recepción: 2[us]
+-Tiempo de operación de cálculo de velocidades para cada rueda a través del modelo cinemático con reloj del sistema en la rutina de recepción: 51,6[us]
+-Tiempo total de cálculo de velocidad por rueda con reloj del sistema a través de la rutina de recepción: 5,454[ms]

@@ -10,7 +10,7 @@
 #pragma config FSOSCEN = OFF
 
 #define GetSystemClock()              (80000000ul)
-#define GetPeripheralClock()          (GetSystemClock()/(1 << OSCCONbits.PBDIV))
+#define GetPeripheralClock()          (GetSystemClock())
 #define GetInstructionClock()         (GetSystemClock())
 
 #define DESIRED_BAUDRATE              (19200)  //The desired BaudRate
@@ -43,8 +43,9 @@ char dir;
 char sendFlag = 0;
 char PacketReceive = 0;
 char dribbler = 0;
-char kick = 0
-int speed[4], vPateo;
+char kick = 0;
+int speed[4];
+int vPateo;
 int id = 0;
 float vel[3];
 float kinematic[4][3];
@@ -56,13 +57,13 @@ int main(void)
   SYSTEMConfig(GetSystemClock(), SYS_CFG_WAIT_STATES | SYS_CFG_PCACHE);
 
   
-  mPORTEClearBits(BIT_0,BIT_1,BIT_2,BIT_3,BIT_4,BIT_5,BIT_6,BIT_7);
+  mPORTEClearBits(BIT_0 | BIT_1 | BIT_2 | BIT_3 | BIT_4 | BIT_5 | BIT_6 | BIT_7);
   mPORTFClearBits(BIT_1);
-  mPORTDClearBits(BIT_2,BIT_3,BIT_4);
+  mPORTDClearBits(BIT_2 | BIT_3 | BIT_4);
 
-  mPORTESetPinsDigitalOut(BIT_0,BIT_1,BIT_2,BIT_3,BIT_4,BIT_5,BIT_6,BIT_7);
+  mPORTESetPinsDigitalOut(BIT_0 | BIT_1 | BIT_2 | BIT_3 | BIT_4 | BIT_5 | BIT_6 | BIT_7);
   mPORTESetPinsDigitalOut(BIT_1);
-  mPORTESetPinsDigitalOut(BIT_2,BIT_3,BIT_4);
+  mPORTESetPinsDigitalOut(BIT_2 | BIT_3 | BIT_4);
   
   UARTConfigure(UART1, UART_ENABLE_PINS_TX_RX_ONLY);
   UARTSetFifoMode(UART1, UART_INTERRUPT_ON_TX_NOT_FULL | UART_INTERRUPT_ON_RX_NOT_EMPTY);
@@ -83,19 +84,13 @@ int main(void)
   kinematic[2][0] = sin(7.0 * (PI / 9.0)); kinematic[2][1] = -cos(7.0 * (PI / 9.0)); kinematic[2][2] = -0.083648;
   kinematic[3][0] = sin(5.0 * (PI / 4.0)); kinematic[3][1] = -cos(5.0 * (PI / 4.0)); kinematic[3][2] = -0.083648;
 
-  I2CSetFrequency(I2C2, GetPeripheralClock(), 100000);
-  I2CEnable(I2C2, TRUE);
+  I2CSetFrequency(I2C1, GetPeripheralClock(), 100000);
+  I2CEnable(I2C1, TRUE);
   SendDAC(0, 1, 0);
-  
+
   msDelay(1000);  
   while (1)
   {
-    if (sendFlag == 1)
-    {        
-        //setSpeed();
-        SetWheelData();
-        sendFlag = 0;
-    }
     msDelay(1);
   }
 
@@ -139,6 +134,7 @@ void __ISR(_UART1_VECTOR, IPL2SOFT) IntUart1Handler(void)
         if (buffer[i] == 'g'){
           i = 0;
           PacketReceive = 0;
+          mPORTESetBits(BIT_1);
           
           corr = 0;
 
@@ -160,6 +156,8 @@ void __ISR(_UART1_VECTOR, IPL2SOFT) IntUart1Handler(void)
           vr_data[2] = buffer[8 + id * 9];
         
           drib_kick = buffer[9 + id * 9];
+          
+          mPORTEClearBits(BIT_1);
 
           int vel_temp = (int)strtol(vx_data, NULL, 16);
           if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
@@ -194,13 +192,17 @@ void __ISR(_UART1_VECTOR, IPL2SOFT) IntUart1Handler(void)
             
             if (speed[j] < 85 && speed[j] > 40) corr |= (1 << j);
           }
+          mPORTESetBits(BIT_1);
           sendFlag = 1;
           //SetWheelData();
         }
 
         else i++;
       }
-      if (aux == 'h') PacketReceive = 1;
+      if (aux == 'h') {
+        PacketReceive = 1;
+        
+      }
       // Clear the RX interrupt Flag
       INTClearFlag(INT_SOURCE_UART_RX(UART1));
 
@@ -276,7 +278,7 @@ void SendDAC(int send, int ref, int dac_selection)
           Index++;
 
           // Verify that the byte was acknowledged
-          if(!I2CByteWasAcknowledged(I2C2))
+          if(!I2CByteWasAcknowledged(I2C1))
           {
               DBPRINTF("Error: Sent byte was not acknowledged\n");
               Success = FALSE;
@@ -383,14 +385,14 @@ BOOL StartTransfer( BOOL restart )
     // Send the Start (or Restart) signal
     if(restart)
     {
-        I2CRepeatStart(I2C2);
+        I2CRepeatStart(I2C1);
     }
     else
     {
         // Wait for the bus to be idle, then start the transfer
-        while( !I2CBusIsIdle(I2C2) );
+        while( !I2CBusIsIdle(I2C1) );
 
-        if(I2CStart(I2C2) != I2C_SUCCESS)
+        if(I2CStart(I2C1) != I2C_SUCCESS)
         {
             DBPRINTF("Error: Bus collision during transfer Start\n");
             return FALSE;
@@ -400,7 +402,7 @@ BOOL StartTransfer( BOOL restart )
     // Wait for the signal to complete
     do
     {
-        status = I2CGetStatus(I2C2);
+        status = I2CGetStatus(I2C1);
 
     } while ( !(status & I2C_START) );
 
@@ -410,17 +412,17 @@ BOOL StartTransfer( BOOL restart )
 BOOL TransmitOneByte( UINT8 data )
 {
     // Wait for the transmitter to be ready
-    while(!I2CTransmitterIsReady(I2C2));
+    while(!I2CTransmitterIsReady(I2C1));
 
     // Transmit the byte
-    if(I2CSendByte(I2C2, data) == I2C_MASTER_BUS_COLLISION)
+    if(I2CSendByte(I2C1, data) == I2C_MASTER_BUS_COLLISION)
     {
         DBPRINTF("Error: I2C Master Bus Collision\n");
         return FALSE;
     }
 
     // Wait for the transmission to finish
-    while(!I2CTransmissionHasCompleted(I2C2));
+    while(!I2CTransmissionHasCompleted(I2C1));
 
     return TRUE;
 }
@@ -430,12 +432,12 @@ void StopTransfer( void )
     I2C_STATUS  status;
 
     // Send the Stop signal
-    I2CStop(I2C2);
+    I2CStop(I2C1);
 
     // Wait for the signal to complete
     do
     {
-        status = I2CGetStatus(I2C2);
+        status = I2CGetStatus(I2C1);
 
     } while ( !(status & I2C_STOP) );
 }

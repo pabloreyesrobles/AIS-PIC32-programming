@@ -110,7 +110,7 @@ int main(void)
   
   // Let interrupt handler do the work
   while (1){
-
+      //Nada por ahora
   }
 
   return 0;
