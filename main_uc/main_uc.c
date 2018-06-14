@@ -4,9 +4,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "nrf24l01.h"
 #pragma config FPLLMUL = MUL_20, FPLLIDIV = DIV_2, FPLLODIV = DIV_1, FWDTEN = OFF
-#pragma config POSCMOD = HS, FNOSC = PRIPLL, FPBDIV = DIV_1
+#pragma config POSCMOD = HS, FNOSC = PRIPLL, FPBDIV = DIV_8
 #pragma config FSOSCEN = OFF
 
 // *****************************************************************************
@@ -15,7 +14,7 @@
 // *****************************************************************************
 // *****************************************************************************
 #define GetSystemClock()              (80000000ul)
-#define GetPeripheralClock()          (GetSystemClock()/*/(1 << OSCCONbits.PBDIV)*/)
+#define GetPeripheralClock()          (GetSystemClock()/(1 << OSCCONbits.PBDIV))
 #define GetInstructionClock()         (GetSystemClock())
 
 #define DESIRED_BAUDRATE              (19200)  //The desired BaudRate
@@ -110,254 +109,103 @@ void StopTransfer( void );
 #define SET_KICK            mPORTESetBits(BIT_4)
 #define RELEASE_KICK        mPORTEClearBits(BIT_4)
 
-int i = 0;
-char buffer[61], aux;
+volatile int i = 0;
+volatile char buffer[61], aux;
 
-char enable = 0x0F;
-char brake = 0x00;
-char dir;
+volatile char enable = 0x0F;
+volatile char brake = 0x00;
+volatile char dir;
 
-char sendFlag = 0;
-char PacketReceive = 0;
+volatile char sendFlag = 0;
+volatile char PacketReceive = 0;
 
-char dribbler = 0;
-char kick = 0;
+volatile char dribbler = 0;
+volatile char kick = 0;
 
-int speed[4], vPateo;
-int id = 0;
+volatile int speed[4], vPateo;
+volatile int id = 2;
 
-float vel[3];
-float kinematic[4][3];
-float ref_speed[4];
+volatile float vel[3];
+volatile float kinematic[4][3];
+volatile float ref_speed[4];
 
-unsigned int count_caca = 0;
+unsigned int PacketRelease = 0;
 
-char corr = 0;
-unsigned char width = 10;
-//unsigned char data[32]; //register to hold letter sent and received
-unsigned char data[10];
-int count = 0;
 
 int main(void)
 {
+    // Configure the device for maximum performance but do not change the PBDIV
+    // Given the options, this function will change the flash wait states, RAM
+    // wait state and enable prefetch cache but will not change the PBDIV.
+    // The PBDIV value is already set via the pragma FPBDIV option above..
+    SYSTEMConfig(GetSystemClock(), SYS_CFG_WAIT_STATES | SYS_CFG_PCACHE);
 
-  // Configure the device for maximum performance but do not change the PBDIV
-  // Given the options, this function will change the flash wait states, RAM
-  // wait state and enable prefetch cache but will not change the PBDIV.
-  // The PBDIV value is already set via the pragma FPBDIV option above..
-  SYSTEMConfig(GetSystemClock(), SYS_CFG_WAIT_STATES | SYS_CFG_PCACHE);
+    //DRIBBLER
+    INIT_DRIBBLER;
+    //KICK
+    INIT_KICK;
+
+    //WHEELS  
+    INIT_ENABLE;
+    INIT_BRAKE;
+    INIT_FWDREV;
+
+    SET_ENABLE_1;
+    SET_ENABLE_2;
+    SET_ENABLE_3;
+    SET_ENABLE_4;
+
+    SET_BRAKE_1;
+    SET_BRAKE_2;
+    SET_BRAKE_3;
+    SET_BRAKE_4;  
+
+    //SERIAL COMMUNICATION
+    // Explorer-16 uses UART1 to connect to the PC.
+    // This initialization assumes 36MHz Fpb clock. If it changes,
+    // you will have to modify baud rate initializer.
+
+    mPORTDClearBits(BIT_4 | BIT_5); 
+    mPORTDSetPinsDigitalOut(BIT_4 | BIT_5);
+    mPORTDSetBits(BIT_4 | BIT_5);
+
+    UARTConfigure(UART1, UART_ENABLE_PINS_TX_RX_ONLY);
+    UARTSetFifoMode(UART1, UART_INTERRUPT_ON_TX_NOT_FULL | UART_INTERRUPT_ON_RX_NOT_EMPTY);
+    UARTSetLineControl(UART1, UART_DATA_SIZE_8_BITS | UART_PARITY_NONE | UART_STOP_BITS_1);
+    UARTSetDataRate(UART1, GetPeripheralClock(), DESIRED_BAUDRATE);
+    UARTEnable(UART1, UART_ENABLE_FLAGS(UART_PERIPHERAL | UART_RX | UART_TX));
+
+    INTEnable(INT_SOURCE_UART_RX(UART1), INT_ENABLED);
+    INTSetVectorPriority(INT_VECTOR_UART(UART1), INT_PRIORITY_LEVEL_2);
+    INTSetVectorSubPriority(INT_VECTOR_UART(UART1), INT_SUB_PRIORITY_LEVEL_0);
+
+    INTConfigureSystem(INT_SYSTEM_CONFIG_MULT_VECTOR);
+
+    INTEnableInterrupts();
+
+    I2CSetFrequency(I2C1, GetPeripheralClock(), 100000);
+    I2CEnable(I2C1, TRUE);
+    SendDAC(0, 1, 0);
+
+    ref_speed[0] = 0.0; ref_speed[1] = 0.0; ref_speed[2] = 0.0; ref_speed[3] = 0.0;
+    vel[0] = 0.0; vel[1] = 0.0; vel[2] = 0.0;
+
+    kinematic[0][0] = sin(-PI/4.0); kinematic[0][1] = -cos(-PI/4.0); kinematic[0][2] = -0.083648;
+    kinematic[1][0] = sin(2.0*(PI/9.0)); kinematic[1][1] = -cos(2.0*(PI/9.0)); kinematic[1][2] = -0.083648;
+    kinematic[2][0] = sin(7.0*(PI/9.0)); kinematic[2][1] = -cos(7.0*(PI/9.0)); kinematic[2][2] = -0.083648;
+    kinematic[3][0] = sin(5.0*(PI/4.0)); kinematic[3][1] = -cos(5.0*(PI/4.0)); kinematic[3][2] = -0.083648;
   
-  //DRIBBLER
-  INIT_DRIBBLER;
-  //KICK
-  INIT_KICK;
-  
-  //WHEELS  
-  INIT_ENABLE;
-  INIT_BRAKE;
-  INIT_FWDREV;
-
-  SET_ENABLE_1;
-  SET_ENABLE_2;
-  SET_ENABLE_3;
-  SET_ENABLE_4;
-
-  SET_BRAKE_1;
-  SET_BRAKE_2;
-  SET_BRAKE_3;
-  SET_BRAKE_4;  
-
-  //SERIAL COMMUNICATION
-  // Explorer-16 uses UART1 to connect to the PC.
-  // This initialization assumes 36MHz Fpb clock. If it changes,
-  // you will have to modify baud rate initializer.
-  
-  mPORTDClearBits(BIT_4 | BIT_5); 
-  mPORTDSetPinsDigitalOut(BIT_4 | BIT_5);
-  mPORTDSetBits(BIT_4 | BIT_5);
-  
-  UARTConfigure(UART1, UART_ENABLE_PINS_TX_RX_ONLY);
-  UARTSetFifoMode(UART1, UART_INTERRUPT_ON_TX_NOT_FULL | UART_INTERRUPT_ON_RX_NOT_EMPTY);
-  UARTSetLineControl(UART1, UART_DATA_SIZE_8_BITS | UART_PARITY_NONE | UART_STOP_BITS_1);
-  UARTSetDataRate(UART1, GetPeripheralClock(), DESIRED_BAUDRATE);
-  UARTEnable(UART1, UART_ENABLE_FLAGS(UART_PERIPHERAL | UART_RX | UART_TX));
-
-  INTEnable(INT_SOURCE_UART_RX(UART1), INT_ENABLED);
-  INTSetVectorPriority(INT_VECTOR_UART(UART1), INT_PRIORITY_LEVEL_2);
-  INTSetVectorSubPriority(INT_VECTOR_UART(UART1), INT_SUB_PRIORITY_LEVEL_0);
-  
-  INTConfigureSystem(INT_SYSTEM_CONFIG_MULT_VECTOR);
-
-  INTEnableInterrupts();
-  
-  I2CSetFrequency(I2C1, GetPeripheralClock(), 100000);
-  I2CEnable(I2C1, TRUE);
-  SendDAC(0, 1, 0);
-  
-  ref_speed[0] = 0.0; ref_speed[1] = 0.0; ref_speed[2] = 0.0; ref_speed[3] = 0.0;
-  vel[0] = 0.0; vel[1] = 0.0; vel[2] = 0.0;
-
-  kinematic[0][0] = sin(-PI / 4.0); kinematic[0][1] = -cos(-PI / 4.0); kinematic[0][2] = -0.083648;
-  kinematic[1][0] = sin(2.0 * (PI / 9.0)); kinematic[1][1] = -cos(2.0 * (PI / 9.0)); kinematic[1][2] = -0.083648;
-  kinematic[2][0] = sin(7.0 * (PI / 9.0)); kinematic[2][1] = -cos(7.0 * (PI / 9.0)); kinematic[2][2] = -0.083648;
-  kinematic[3][0] = sin(5.0 * (PI / 4.0)); kinematic[3][1] = -cos(5.0 * (PI / 4.0)); kinematic[3][2] = -0.083648;
-  
-  //Initialize(); //initialize IO, UART, SPI, set up nRF24L01 as TX
-  //unsigned char nrf_status;
-  // Let interrupt handler do the work
-  while (1){
-      msDelay(5000);
-      SET_DRIBBLER;
-      msDelay(5000);
-      RELEASE_DRIBBLER;
-      /*
-        nrf24l01_irq_clear_all(); //clear interrupts again
-        
-        while(!(nrf24l01_irq_pin_active() && nrf24l01_irq_rx_dr_active())){
-            nrf_status = nrf24l01_get_status();
-        }
-
-        nrf24l01_read_rx_payload(data, width); //get the payload into data
-        nrf24l01_irq_clear_all(); //clear interrupts again
-        msDelay(1);
-        
-        char vx_data[8];
-        char vy_data[8];
-        char vr_data[8];
-        char drib_kick;
-
-        vx_data[0] = data[0 + id * 10];
-        vx_data[1] = data[1 + id * 10];
-        vx_data[2] = data[2 + id * 10];
-        vx_data[3] = 0;
-        vx_data[4] = 0;
-        vx_data[5] = 0;
-        vx_data[6] = 0;
-        vx_data[7] = 0;
-
-        vy_data[0] = data[3 + id * 10];
-        vy_data[1] = data[4 + id * 10];
-        vy_data[2] = data[5 + id * 10];
-        vy_data[3] = 0;
-        vy_data[4] = 0;
-        vy_data[5] = 0;
-        vy_data[6] = 0;
-        vy_data[7] = 0;
-
-        vr_data[0] = data[6 + id * 10];
-        vr_data[1] = data[7 + id * 10];
-        vr_data[2] = data[8 + id * 10];
-        vr_data[3] = 0;
-        vr_data[4] = 0;
-        vr_data[5] = 0;
-        vr_data[6] = 0;
-        vr_data[7] = 0;
-
-        drib_kick = data[9 + id * 10];
-
-        int vel_temp = 0;
-
-        vel_temp = (int)strtol(vx_data, NULL, 16);
-        if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-
-        vel[0] = vel_temp / 1000.0;
-
-        vel_temp = (int)strtol(vy_data, NULL, 16);
-        if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-
-        vel[1] = vel_temp / 1000.0;
-
-        vel_temp = (int)strtol(vr_data, NULL, 16);
-        if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-
-        vel[2] = vel_temp / 1000.0;
-        dribbler = (drib_kick & 0x04) >> 2;
-        kick = drib_kick & 0x03;
-        //if (vel[1] &)          
-        int j, k;
-        float vel_t;
-        for (j = 0; j < 4; j++)
-        {
-          vel_t = 0;
-          for (k = 0; k < 3; k++)
-          {
-            vel_t += kinematic[j][k] * vel[k];
-          }
-
-          if (vel_t < 0) dir &= ~(1 << j);
-          else dir |= 1 << j;
-
-          ref_speed[j] = ((fabs(vel_t) / wheel_radio) * (2.4 / (2*M_PI)));
-          count_caca = 1;
-        }
-        SetWheelData();
-      
-        */
-    
-        if (count_caca == 1){
+    // Let interrupt handler do the work
+    SetWheelData();
+    while (1){
+        if (PacketRelease == 1){
             SetWheelData();
-            count_caca = 0;
+            PacketRelease = 0;
         }
     }
 
     return 0;
 }
-
-//initialize routine
-void Initialize()
-{
-	InitializeIO(); //set up IO (directions and functions)
-	SpiInitDevice(2, 1, 0, 0);
-	nrf24l01_initialize_debug(true, width, false); //initialize the 24L01 to the debug configuration as RX, 1 data byte, and auto-ack disabled
-}
-
-//initialize IO pins
-void InitializeIO(void)
-{
-	mPORTGClearBits(BIT_9);
-	mPORTDClearBits(BIT_5 | BIT_8);
-
-	mPORTDSetPinsDigitalIn(BIT_8);
-
-	mPORTGSetPinsDigitalOut(BIT_9);
-	mPORTDSetPinsDigitalOut(BIT_5);
-  	//LATG |= BIT_9; // set CSN bit active
-}
-
-unsigned char spi_send_read_byte(unsigned char byte) {
-	unsigned short	txData, rxData; // transmit, receive characters
-	int chn = 2; // SPI channel to use (1 or 2)
-	 
-	txData = byte; // take inputted byte and store into txData   
-	SpiChnPutC(chn, txData);			// send data
-	rxData = SpiChnGetC(chn);			// retreive over channel chn the received data into rxData
-
-	return rxData; 
-}
-
-void SpiInitDevice(int chn, int isMaster, int frmEn, int frmMaster) {
-	unsigned int config = SPI_CON_MODE8 | SPI_CON_SMP | SPI_CON_ON;	// SPI configuration word
-	if(isMaster) {
-	 	config |= SPI_CON_MSTEN;
-	}
-	if(frmEn) {
-		config |= SPI_CON_FRMEN;
-		if(!frmMaster) {   
-			config |= SPI_CON_FRMSYNC;
-  		}
-	}
-	SpiChnOpen(chn, config, 4);	// divide fpb by 4, configure the I/O ports. Not using SS in this example
-}
-
-// Delayus
-void Delayus( unsigned t) {
-	OpenTimer1(T1_ON | T1_PS_1_256, 0xFFFF);
-	while (t--)	{  // t x 1ms loop
-		WriteTimer1(0);
-		while (ReadTimer1() < GetSystemClock()/256/1000000);
-	}
-	CloseTimer1();
-} 
 
 // helper functions
 void WriteString1(const char *string)
@@ -385,103 +233,105 @@ void PutCharacter(const char character)
 
 // UART 1 interrupt handler
 // it is set at priority level 2 with software context saving
-void __ISR(_UART1_VECTOR, IPL4SOFT) IntUart1Handler(void)
+void __ISR(_UART1_VECTOR, IPL2SOFT) IntUart1Handler(void)
 {
-  // Is this an RX interrupt?
-  if (INTGetFlag(INT_SOURCE_UART_RX(UART1)))
+    // Is this an RX interrupt?
+    if (INTGetFlag(INT_SOURCE_UART_RX(UART1)))
     {
-      // Clear the RX interrupt Flag
-      INTClearFlag(INT_SOURCE_UART_RX(UART1));
-      char aux = (char) UARTGetDataByte(UART1);
-      if (PacketReceive){ 
-        buffer[i] = aux;
-
-        if (buffer[i] == 'g'){
-          i = 0;
-          PacketReceive = 0;
-          
-          corr = 0;
-
-          char vx_data[8];
-          char vy_data[8];
-          char vr_data[8];
-          char drib_kick;
-          
-          vx_data[0] = buffer[0 + id * 10];
-          vx_data[1] = buffer[1 + id * 10];
-          vx_data[2] = buffer[2 + id * 10];
-          vx_data[3] = 0;
-          vx_data[4] = 0;
-          vx_data[5] = 0;
-          vx_data[6] = 0;
-          vx_data[7] = 0;
-
-          vy_data[0] = buffer[3 + id * 10];
-          vy_data[1] = buffer[4 + id * 10];
-          vy_data[2] = buffer[5 + id * 10];
-          vy_data[3] = 0;
-          vy_data[4] = 0;
-          vy_data[5] = 0;
-          vy_data[6] = 0;
-          vy_data[7] = 0;
-
-          vr_data[0] = buffer[6 + id * 10];
-          vr_data[1] = buffer[7 + id * 10];
-          vr_data[2] = buffer[8 + id * 10];
-          vr_data[3] = 0;
-          vr_data[4] = 0;
-          vr_data[5] = 0;
-          vr_data[6] = 0;
-          vr_data[7] = 0;
-        
-          drib_kick = buffer[9 + id * 10];
-          
-          int vel_temp = 0;
-          
-          vel_temp = (int)strtol(vx_data, NULL, 16);
-          if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-          
-          vel[0] = vel_temp / 1000.0;
-
-          vel_temp = (int)strtol(vy_data, NULL, 16);
-          if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-
-          vel[1] = vel_temp / 1000.0;
-
-          vel_temp = (int)strtol(vr_data, NULL, 16);
-          if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
-
-          vel[2] = vel_temp / 1000.0;
-          dribbler = (drib_kick & 0x04) >> 2;
-          kick = drib_kick & 0x03;
-          //if (vel[1] &)          
-          int j, k;
-          float vel_t;
-          for (j = 0; j < 4; j++)
-          {
-            vel_t = 0;
-            for (k = 0; k < 3; k++)
+        // Clear the RX interrupt Flag
+        INTClearFlag(INT_SOURCE_UART_RX(UART1));
+        char aux = (char) UARTGetDataByte(UART1);
+        if (PacketReceive)
+        { 
+            if (aux == 'g')
             {
-              vel_t += kinematic[j][k] * vel[k];
+                i = 0;
+                PacketReceive = 0;
+
+                char vx_data[8];
+                char vy_data[8];
+                char vr_data[8];
+                char drib_kick;
+
+                vx_data[0] = buffer[0 + id * 10];
+                vx_data[1] = buffer[1 + id * 10];
+                vx_data[2] = buffer[2 + id * 10];
+                vx_data[3] = 0;
+                vx_data[4] = 0;
+                vx_data[5] = 0;
+                vx_data[6] = 0;
+                vx_data[7] = 0;
+
+                vy_data[0] = buffer[3 + id * 10];
+                vy_data[1] = buffer[4 + id * 10];
+                vy_data[2] = buffer[5 + id * 10];
+                vy_data[3] = 0;
+                vy_data[4] = 0;
+                vy_data[5] = 0;
+                vy_data[6] = 0;
+                vy_data[7] = 0;
+
+                vr_data[0] = buffer[6 + id * 10];
+                vr_data[1] = buffer[7 + id * 10];
+                vr_data[2] = buffer[8 + id * 10];
+                vr_data[3] = 0;
+                vr_data[4] = 0;
+                vr_data[5] = 0;
+                vr_data[6] = 0;
+                vr_data[7] = 0;
+
+                drib_kick = buffer[9 + id * 10];
+
+                int vel_temp = 0;
+
+                vel_temp = (int)strtol(vx_data, NULL, 16);
+                if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
+
+                vel[0] = vel_temp / 1000.0;
+
+                vel_temp = (int)strtol(vy_data, NULL, 16);
+                if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
+
+                vel[1] = vel_temp / 1000.0;
+
+                vel_temp = (int)strtol(vr_data, NULL, 16);
+                if (vel_temp & 0x800) vel_temp = -((vel_temp ^ 0xFFF) + 1);
+
+                vel[2] = vel_temp / 1000.0;
+
+                dribbler = (drib_kick & 0x04) >> 2;
+                kick = drib_kick & 0x03;
+
+                int j, k;
+                float vel_t;
+                for (j = 0; j < 4; j++)
+                {
+                    vel_t = 0;
+                    for (k = 0; k < 3; k++)
+                    {
+                      vel_t += kinematic[j][k] * vel[k];
+                    }
+
+                    if (vel_t < 0) dir &= ~(1 << j);
+                    else dir |= 1 << j;
+
+                    ref_speed[j] = ((fabs(vel_t) / wheel_radio) * (1.0 / (2*M_PI)));
+                }
+                PacketRelease = 1;
             }
-
-            if (vel_t < 0) dir &= ~(1 << j);
-            else dir |= 1 << j;
-            
-            ref_speed[j] = ((fabs(vel_t) / wheel_radio) * (1.0 / (2*M_PI)));
-            count_caca = 1;
-          }
+            else 
+            {
+                buffer[i] = aux;
+                i++;
+            }
         }
-
-        else i++;
-      }
-      if (aux == 'h') PacketReceive = 1;
+        if (aux == 'h') PacketReceive = 1;
     }
 
-  // We don't care about TX interrupt
-  if ( INTGetFlag(INT_SOURCE_UART_TX(UART1)) )
+    // We don't care about TX interrupt
+    if ( INTGetFlag(INT_SOURCE_UART_TX(UART1)) )
     {
-      INTClearFlag(INT_SOURCE_UART_TX(UART1));
+        INTClearFlag(INT_SOURCE_UART_TX(UART1));
     }
 }
 
@@ -566,16 +416,23 @@ void SetWheelData()
         }
         SendDAC((int)(ref_speed[k]*dac_scale), 0, k);
     }
-    
-    if (dribbler) 
+    if (dribbler)
+    {
         SET_DRIBBLER;
-    else 
+    }               
+    else
+    {
         RELEASE_DRIBBLER;
-    
-    if (kick) 
+    }
+
+    if (kick)
+    {
         SET_KICK;
-    else 
-        RELEASE_DRIBBLER;
+    }
+    else
+    {
+        RELEASE_KICK;
+    } 
 }
 
 void SendDAC(int send, int ref, int dac_selection)

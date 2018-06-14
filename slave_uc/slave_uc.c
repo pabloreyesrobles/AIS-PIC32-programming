@@ -36,11 +36,14 @@ void StopTransfer( void );
 #define scale_factor                  111.79 //111.79
 #define pulse_speed                   2
 
+#define T4_TICK                       GetPeripheralClock() / 256.0
 #define T3_TICK                       GetPeripheralClock() / 256.0
 #define T2_TICK                       GetPeripheralClock() / 256.0
 #define MAX_DC                        500
 #define MIN_DC                        10
 #define Dt                            0.0016
+#define Ts                            0.0625
+#define ppr                           18.0
 #define robot_radio                   0.0285
 #define analog_scale                  1.65                          // 1023/620 - M�ximo valor DAC/M�ximo valor ADC PIC32 PID
 #define speed_scale                   50.10612245                   // 1023/20.4167 - M�ximo valor DAC/Velocidad nominal RUEDA
@@ -65,12 +68,17 @@ volatile float DC;
 
 volatile float error = 0;
 volatile float error_prev = 0;
+volatile float error_prev_prev = 0;
+
 volatile float integral = 0;
 volatile float output = 0;
+volatile float output_prev = 0;
 
-float Kp = 0.31, Ki = 0.35, Kd = 0.0006; // Ajustar
+float Kp = 5.0, Ki = 40.0, Kd = 0.02; // Ajustar
 
-volatile int count = 0;
+double a, b, c;
+
+volatile int count_speed = 0;
 unsigned int channel = 0;
 
 int main(void)
@@ -82,18 +90,42 @@ int main(void)
     SYSTEMConfig(GetSystemClock(), SYS_CFG_WAIT_STATES | SYS_CFG_PCACHE);
 
     //TIMER 3: MODO CAPTURA PARA MEDICIÃN
-    OpenTimer3(T3_ON | T3_PS_1_256 | T3_SOURCE_INT, T3_TICK);
-    //ConfigIntTimer3(T3_INT_ON | T3_INT_PRIOR_1 | T3_INT_SUB_PRIOR_2);
+    OpenTimer3(T3_ON | T3_PS_1_256 | T3_SOURCE_INT, 2441);
+    ConfigIntTimer3(T3_INT_ON | T3_INT_PRIOR_1 | T3_INT_SUB_PRIOR_2);
 
-    mPORTDClearBits(BIT_11); 
-    mPORTDSetPinsDigitalIn(BIT_11);
+    mPORTDClearBits(BIT_11 | BIT_10 | BIT_9); 
+    mPORTDSetPinsDigitalIn(BIT_11 | BIT_10 | BIT_9);
+    
+    /*
     mIC4ClearIntFlag();  
+    mIC3ClearIntFlag();
+    mIC2ClearIntFlag();
 
     OpenCapture4(IC_EVERY_RISE_EDGE | IC_INT_1CAPTURE | IC_TIMER3_SRC | IC_FEDGE_FALL | IC_CAP_16BIT | IC_ON);
     ConfigIntCapture4(IC_INT_ON | IC_INT_PRIOR_3 | IC_INT_SUB_PRIOR_0);
     
-
+    OpenCapture3(IC_EVERY_RISE_EDGE | IC_INT_1CAPTURE | IC_TIMER3_SRC | IC_FEDGE_FALL | IC_CAP_16BIT | IC_ON);
+    ConfigIntCapture3(IC_INT_ON | IC_INT_PRIOR_3 | IC_INT_SUB_PRIOR_0);
+    */
+    
+    mINT4ClearIntFlag();
+    mINT3ClearIntFlag();
+    mINT2ClearIntFlag();
+    
+    SetSubPriorityINT4(EXT_INT_SUB_PRI_3);
+    ConfigINT4(EXT_INT_PRI_3 | RISING_EDGE_INT | EXT_INT_ENABLE);
+    
+    SetSubPriorityINT3(EXT_INT_SUB_PRI_3);
+    ConfigINT3(EXT_INT_PRI_3 | RISING_EDGE_INT | EXT_INT_ENABLE);
+    
+    SetSubPriorityINT2(EXT_INT_SUB_PRI_3);
+    ConfigINT2(EXT_INT_PRI_3 | RISING_EDGE_INT | EXT_INT_ENABLE);
+    
     /*
+    OpenCapture2(IC_EVERY_RISE_EDGE | IC_INT_1CAPTURE | IC_TIMER3_SRC | IC_FEDGE_FALL | IC_CAP_16BIT | IC_ON);
+    ConfigIntCapture2(IC_INT_ON | IC_INT_PRIOR_3 | IC_INT_SUB_PRIOR_0);
+    */
+    
     UARTConfigure(UART1, UART_ENABLE_PINS_TX_RX_ONLY);
     UARTSetFifoMode(UART1, UART_INTERRUPT_ON_TX_NOT_FULL | UART_INTERRUPT_ON_RX_NOT_EMPTY);
     UARTSetLineControl(UART1, UART_DATA_SIZE_8_BITS | UART_PARITY_NONE | UART_STOP_BITS_1);
@@ -103,7 +135,7 @@ int main(void)
     INTEnable(INT_SOURCE_UART_RX(UART1), INT_ENABLED);
     INTSetVectorPriority(INT_VECTOR_UART(UART1), INT_PRIORITY_LEVEL_2);
     INTSetVectorSubPriority(INT_VECTOR_UART(UART1), INT_SUB_PRIORITY_LEVEL_0);
-    */
+    
     //ADC
     // configure and enable the ADC
     CloseADC10();	// ensure the ADC is off before setting the configuration
@@ -141,16 +173,23 @@ int main(void)
     mPORTDSetPinsDigitalOut(BIT_1);
     RPS = 0;
     DC = 0;
-    ref_speed = 5.0;
+    ref_speed = 0.0;
     //EL RELOJ PBCLK SE DIVIDE POR 4 PARA GENERAR UNA PWM DE 10000HZ
-    OpenTimer2(T2_ON | T2_PS_1_16 | T2_SOURCE_INT, 1000);
-    ConfigIntTimer2(T2_INT_ON | T2_INT_PRIOR_2 | T2_INT_SUB_PRIOR_1);
+    OpenTimer2(T2_ON | T2_PS_1_2 | T2_SOURCE_INT, 1000);
+    //ConfigIntTimer2(T2_INT_ON | T2_INT_PRIOR_2 | T2_INT_SUB_PRIOR_1);
+    
+    //OpenTimer4(T4_ON | T4_PS_1_256 | T4_SOURCE_INT, 4882);
+    //ConfigIntTimer4(T4_INT_ON | T4_INT_PRIOR_2 | T4_INT_SUB_PRIOR_1);
 
     OpenOC2(OC_ON | OC_TIMER_MODE16 | OC_TIMER2_SRC | OC_PWM_FAULT_PIN_DISABLE, 0, 0);
 
+    a = Kp + Ki*(Ts/2) + Kd/Ts;
+    b = -Kp + Ki*(Ts/2) - 2*Kd/Ts;
+    c = Kd/Ts;
+    
     //Debug
-    mPORTDClearBits(BIT_9 | BIT_10); 
-    mPORTDSetPinsDigitalOut(BIT_9 | BIT_10);
+    mPORTEClearBits(BIT_5); 
+    mPORTESetPinsDigitalOut(BIT_5);
 
     INTConfigureSystem(INT_SYSTEM_CONFIG_MULT_VECTOR);
 
@@ -159,6 +198,7 @@ int main(void)
 
     // Let interrupt handler do the work
     while (1){   
+        SetDCOC2PWM(DC);
         
         while(!mAD1GetIntFlag() ) 
         { 
@@ -208,28 +248,43 @@ void SetWheelData()
     if(DC > MAX_DC) DC = MAX_DC;
 }
 
-void __ISR( _INPUT_CAPTURE_4_VECTOR, IPL3AUTO) Capture4(void)
+void __ISR( _EXTERNAL_4_VECTOR, IPL3AUTO) INT4(void)
 {
-    unsigned int con_buf[4]; 
-    
-    ReadCapture4(con_buf); // Read captures into buffer
-    t_new = con_buf[0] & 0x0000FFFF; // Save time of event
-    //t_new = TMR3;
-    time_diff = t_new - t_old; // Compute elapsed time in timer Ã¢ÂÂticksÃ¢ÂÂ
-    t_old = t_new;  // Replace previous time capture with new
-    
-    RPS = (T3_TICK / (6 * time_diff * 2.4));
-    count = 0;
+    count_speed += 1;
     //  Compute motor speed in RPS[ ](revolutions per second) and save as global variable
     //  Details left as an exercise for the Reader
-    mIC4ClearIntFlag(); // Clears interrupt flag
-    // INTClearFlag(INT_IC4); // Alternate peripheral library function
+    mINT4ClearIntFlag();
 }
 
+void __ISR( _EXTERNAL_3_VECTOR, IPL3AUTO) INT3(void)
+{
+    count_speed += 1;
+    //  Compute motor speed in RPS[ ](revolutions per second) and save as global variable
+    //  Details left as an exercise for the Reader
+    mINT3ClearIntFlag();
+}
+
+void __ISR( _EXTERNAL_2_VECTOR, IPL3AUTO) INT2(void)
+{
+    count_speed += 1;
+    //  Compute motor speed in RPS[ ](revolutions per second) and save as global variable
+    //  Details left as an exercise for the Reader
+    mINT2ClearIntFlag();
+}
+/*
+void __ISR( _INPUT_CAPTURE_2_VECTOR, IPL3AUTO) Capture2(void)
+{
+    count_speed += 1;
+    //  Compute motor speed in RPS[ ](revolutions per second) and save as global variable
+    //  Details left as an exercise for the Reader
+    mIC2ClearIntFlag(); // Clears interrupt flag
+    // INTClearFlag(INT_IC2); // Alternate peripheral library function
+}
+*/
+/*
 void __ISR( _TIMER_2_VECTOR, IPL2AUTO) T2Interrupt(void)
 {
     if(RPS > 21.0) RPS = 21.0;
-    mPORTDSetBits(BIT_9);
     error = ref_speed - RPS;
     integral += error*Dt;
     
@@ -245,6 +300,30 @@ void __ISR( _TIMER_2_VECTOR, IPL2AUTO) T2Interrupt(void)
     if (DC < 0) DC = 0;
     
     SetDCOC2PWM(DC);
+    
+    mT2ClearIntFlag();
+}
+*/
+void __ISR( _TIMER_3_VECTOR, IPL2AUTO) T3Interrupt(void)
+{
+    RPS = count_speed / (Ts * ppr * 2.4);
+    
+    error = ref_speed - RPS;
+
+    output = output_prev + a*error + b*error_prev + c*error_prev_prev;
+    
+    if (output > MAX_DC) output = MAX_DC;
+    
+    if (output < 0) output = 0;
+    
+    output_prev = output;
+    error_prev_prev = error_prev;
+    error_prev = error;
+    
+    DC = output;
+    
+    count_speed = 0;
+        
     /*
     DC = (int)(channel*analog_scaling);
     SetDCOC2PWM(DC);
@@ -253,8 +332,7 @@ void __ISR( _TIMER_2_VECTOR, IPL2AUTO) T2Interrupt(void)
     PrintSpeed(ref_speed*100);
     WriteString1((char *)" - ");
     */
-    mPORTDClearBits(BIT_9);
-    mT2ClearIntFlag();
+    mT3ClearIntFlag();
 }
 
 void PrintSpeed(float rueda)
@@ -309,31 +387,35 @@ void __ISR(_UART1_VECTOR, IPL2SOFT) IntUart1Handler(void)
             buffer[i] = aux;
 
             if (buffer[i] == 'g'){
-              i = 0;
-              int pid_selector = PacketReceive;
-              PacketReceive = 0;
+                i = 0;
+                int pid_selector = PacketReceive;
+                PacketReceive = 0;
 
-              corr = 0;
+                corr = 0;
 
-              char pid_set[8];
+                char pid_set[8];
 
-              pid_set[0] = buffer[0];
-              pid_set[1] = buffer[1];
-              pid_set[2] = buffer[2];
-              pid_set[3] = buffer[3];
-              pid_set[4] = buffer[4];
-              pid_set[5] = buffer[5];
-              pid_set[6] = buffer[6];
-              pid_set[7] = buffer[7];
+                pid_set[0] = buffer[0];
+                pid_set[1] = buffer[1];
+                pid_set[2] = buffer[2];
+                pid_set[3] = buffer[3];
+                pid_set[4] = buffer[4];
+                pid_set[5] = buffer[5];
+                pid_set[6] = buffer[6];
+                pid_set[7] = buffer[7];
 
-              unsigned int pid_tunning = 0;
+                unsigned int pid_tunning = 0;
 
-              pid_tunning = (unsigned int)strtoul(pid_set, NULL, 10);
+                pid_tunning = (unsigned int)strtoul(pid_set, NULL, 10);
 
-              if (pid_selector == 1) Kp = pid_tunning / 10000.0;
-              if (pid_selector == 2) Ki = pid_tunning / 10000.0;
-              if (pid_selector == 3) Kd = pid_tunning / 10000.0;
-              corr = 1;
+                if (pid_selector == 1) Kp = pid_tunning / 10000.0;
+                if (pid_selector == 2) Ki = pid_tunning / 10000.0;
+                if (pid_selector == 3) Kd = pid_tunning / 10000.0;
+                corr = 1;
+              
+                a = Kp + Ki*(Ts/2) + Kd/Ts;
+                b = -Kp + Ki*(Ts/2) - 2*Kd/Ts;
+                c = Kd/Ts;
             }
 
             else i++;
